@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emoji Jump!</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts (Inter) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <!-- React and ReactDOM CDNs -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel for JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        /* Custom styles for the game area to ensure positioning works correctly */
+        #game-root {
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+            background: linear-gradient(to bottom right, #e0f2fe, #c5e0ff); /* Adjusted gradient */
+        }
+        .phone-container {
+            position: relative; /* Ensure children are positioned relative to this */
+            width: 100%;
+            max-width: 64rem; /* Equivalent to max-w-4xl */
+            height: 24rem; /* Equivalent to h-96 */
+            background-color: white;
+            border-radius: 0.75rem; /* rounded-xl */
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* shadow-xl */
+            overflow: hidden;
+            border: 4px solid #d1d5db; /* border-4 border-gray-300 */
+        }
+        .phone-item {
+            position: absolute;
+            transform: translate(-50%, -50%); /* Center the phone on its x,y coordinates */
+            width: 120px;
+            height: 180px;
+            min-width: 100px;
+            min-height: 150px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            font-family: 'Inter', sans-serif;
+            z-index: 1;
+        }
+        .phone-item.is-current {
+            border: 4px solid #3b82f6; /* border-4 border-blue-500 */
+            background-color: #e0f2fe; /* bg-gray-200 */
+            box-shadow: 0 0 15px rgba(0, 123, 255, 0.7);
+            z-index: 5;
+        }
+        .emoji-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: yellow;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 28px;
+            border: 2px solid #333;
+            z-index: 10;
+        }
+        .emoji-icon.is-current-emoji {
+            transform: scale(1.25) translateY(-1rem); /* scale-125 -translate-y-4 */
+        }
+    </style>
+</head>
+<body>
+    <div id="game-root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+        const { createRoot } = ReactDOM;
+
+        // Main App Component
+        const App = () => {
+            // Game States
+            const GAME_STATE = {
+                START: 'start',
+                PLAYING: 'playing',
+                GAME_OVER: 'gameOver',
+            };
+
+            // State variables
+            const [gameState, setGameState] = useState(GAME_STATE.START);
+            const [score, setScore] = useState(0);
+            const [currentPhoneId, setCurrentPhoneId] = useState(null); // ID телефона, в котором находится смайлик
+            const [phones, setPhones] = useState([]); // Список активных телефонов
+            const [message, setMessage] = useState(''); // Игровые сообщения
+            const [jumpCooldown, setJumpCooldown] = useState(0); // Кулдаун для прыжка
+            const [timeToNextPhone, setTimeToNextPhone] = useState(5); // Время до появления нового телефона или конца игры
+            const [phoneSpawnInterval, setPhoneSpawnInterval] = useState(2000); // Как часто появляются новые телефоны (мс)
+            const [phoneDisappearTime, setPhoneDisappearTime] = useState(3000); // Как долго телефоны остаются видимыми (мс)
+
+            // Refs for intervals/timeouts
+            const gameLoopIntervalRef = useRef(null);
+            const phoneSpawnIntervalRef = useRef(null);
+            const phoneDisappearTimeoutRef = useRef({}); // Хранение таймаутов для исчезновения каждого телефона
+
+            // Game settings
+            const MAX_PHONES = 3; // Максимальное количество видимых телефонов одновременно
+            const JUMP_COOLDOWN_TIME = 0.5; // Секунды между прыжками
+            const INITIAL_TIME_TO_NEXT_PHONE = 5; // Начальное время для обратного отсчета до конца игры
+
+            // Utility function to generate unique IDs
+            const generateId = useCallback(() => Math.random().toString(36).substr(2, 9), []);
+
+            // --- Game Logic Functions ---
+
+            // Начинает игру
+            const startGame = useCallback(() => {
+                setScore(0);
+                setPhones([]);
+                setMessage('');
+                setCurrentPhoneId(null);
+                setJumpCooldown(0);
+                setTimeToNextPhone(INITIAL_TIME_TO_NEXT_PHONE);
+                setGameState(GAME_STATE.PLAYING);
+
+                // Изначальный спавн телефона
+                const initialPhoneId = generateId();
+                setPhones([{ id: initialPhoneId, x: 50, y: 50, isCurrent: true }]);
+                setCurrentPhoneId(initialPhoneId);
+            }, [GAME_STATE.PLAYING, generateId, INITIAL_TIME_TO_NEXT_PHONE]);
+
+            // Завершает игру
+            const endGame = useCallback((reason) => {
+                setMessage(`Игра окончена! ${reason}. Счет: ${score}`);
+                setGameState(GAME_STATE.GAME_OVER);
+                clearInterval(gameLoopIntervalRef.current);
+                clearInterval(phoneSpawnIntervalRef.current);
+                // Очищаем все таймауты исчезновения телефонов
+                Object.values(phoneDisappearTimeoutRef.current).forEach(clearTimeout);
+                phoneDisappearTimeoutRef.current = {};
+            }, [score, GAME_STATE.GAME_OVER]);
+
+            // Обрабатывает прыжок смайлика на новый телефон
+            const handleJump = useCallback((targetPhoneId) => {
+                if (gameState !== GAME_STATE.PLAYING || jumpCooldown > 0) return;
+
+                const targetPhone = phones.find(p => p.id === targetPhoneId);
+
+                if (targetPhone && targetPhone.id !== currentPhoneId) {
+                    setScore(prevScore => prevScore + 1);
+                    setMessage('Успешный прыжок!');
+
+                    // Обновляем текущий телефон
+                    setPhones(prevPhones => prevPhones.map(p => ({
+                        ...p,
+                        isCurrent: p.id === targetPhoneId
+                    })));
+                    setCurrentPhoneId(targetPhoneId);
+
+                    // Сбрасываем таймер для следующего телефона/конца игры
+                    setTimeToNextPhone(INITIAL_TIME_TO_NEXT_PHONE);
+
+                    // Очищаем таймаут исчезновения для нового текущего телефона
+                    if (phoneDisappearTimeoutRef.current[targetPhoneId]) {
+                        clearTimeout(phoneDisappearTimeoutRef.current[targetPhoneId]);
+                        delete phoneDisappearTimeoutRef.current[targetPhoneId];
+                    }
+
+                    setJumpCooldown(JUMP_COOLDOWN_TIME); // Запускаем кулдаун
+                } else if (targetPhone && targetPhone.id === currentPhoneId) {
+                    setMessage("Уже в этом телефоне!");
+                } else {
+                    setMessage("Нет доступного телефона для прыжка!");
+                }
+            }, [gameState, jumpCooldown, phones, currentPhoneId, GAME_STATE.PLAYING, INITIAL_TIME_TO_NEXT_PHONE]);
+
+            // Спавнит новый телефон
+            const spawnPhone = useCallback(() => {
+                setPhones(prevPhones => {
+                    // Удаляем самый старый не-текущий телефон, если достигнут максимум
+                    if (prevPhones.length >= MAX_PHONES) {
+                        const nonCurrentPhones = prevPhones.filter(p => !p.isCurrent);
+                        if (nonCurrentPhones.length > 0) {
+                            const oldestNonCurrentId = nonCurrentPhones[0].id;
+                            // Очищаем его таймаут исчезновения, если он существует
+                            if (phoneDisappearTimeoutRef.current[oldestNonCurrentId]) {
+                                clearTimeout(phoneDisappearTimeoutRef.current[oldestNonCurrentId]);
+                                delete phoneDisappearTimeoutRef.current[oldestNonCurrentId];
+                            }
+                            return prevPhones.filter(p => p.id !== oldestNonCurrentId);
+                        }
+                    }
+
+                    // Генерируем случайную позицию для нового телефона
+                    const newX = Math.random() * 80 + 10; // От 10% до 90% ширины
+                    const newY = Math.random() * 80 + 10; // От 10% до 90% высоты
+                    const newPhone = { id: generateId(), x: newX, y: newY, isCurrent: false };
+
+                    // Устанавливаем таймаут для исчезновения нового телефона, если на него не прыгнули
+                    phoneDisappearTimeoutRef.current[newPhone.id] = setTimeout(() => {
+                        setPhones(current => {
+                            // Удаляем только если это не текущий телефон
+                            if (current.find(p => p.id === newPhone.id && p.isCurrent)) {
+                                return current; // Не удаляем, если он стал текущим
+                            }
+                            return current.filter(p => p.id !== newPhone.id);
+                        });
+                        delete phoneDisappearTimeoutRef.current[newPhone.id];
+                    }, phoneDisappearTime);
+
+                    return [...prevPhones, newPhone];
+                });
+            }, [generateId, MAX_PHONES, phoneDisappearTime]);
+
+            // --- Effects ---
+
+            // Игровой цикл (Таймер до конца игры)
+            useEffect(() => {
+                if (gameState === GAME_STATE.PLAYING) {
+                    gameLoopIntervalRef.current = setInterval(() => {
+                        setTimeToNextPhone(prevTime => {
+                            if (prevTime <= 0) {
+                                endGame("Время вышло! Нет нового телефона для прыжка");
+                                return 0;
+                            }
+                            return prevTime - 1;
+                        });
+                    }, 1000); // Уменьшаем каждую секунду
+                } else {
+                    clearInterval(gameLoopIntervalRef.current);
+                }
+                return () => clearInterval(gameLoopIntervalRef.current);
+            }, [gameState, GAME_STATE.PLAYING, endGame]);
+
+            // Таймер кулдауна прыжка
+            useEffect(() => {
+                if (jumpCooldown > 0) {
+                    const timer = setInterval(() => {
+                        setJumpCooldown(prev => {
+                            if (prev <= 0.1) { // Проверяем на маленькое значение, чтобы очистить интервал
+                                clearInterval(timer);
+                                return 0;
+                            }
+                            return prev - 0.1;
+                        });
+                    }, 100);
+                    return () => clearInterval(timer);
+                }
+            }, [jumpCooldown]);
+
+            // Спавн телефонов
+            useEffect(() => {
+                if (gameState === GAME_STATE.PLAYING) {
+                    phoneSpawnIntervalRef.current = setInterval(spawnPhone, phoneSpawnInterval);
+                } else {
+                    clearInterval(phoneSpawnIntervalRef.current);
+                }
+                return () => clearInterval(phoneSpawnIntervalRef.current);
+            }, [gameState, GAME_STATE.PLAYING, spawnPhone, phoneSpawnInterval]);
+
+            // --- UI Components ---
+
+            // Компонент Смайлика
+            const Emoji = ({ isCurrent }) => (
+                <div
+                    className={`absolute transition-all duration-300 ease-out transform ${
+                        isCurrent ? 'is-current-emoji' : ''
+                    }`}
+                    style={{
+                        width: '40px',
+                        height: '40px',
+                        borderRadius: '50%',
+                        backgroundColor: 'yellow',
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        fontSize: '28px',
+                        border: '2px solid #333',
+                        zIndex: 10,
+                    }}
+                >
+                    😊
+                </div>
+            );
+
+            // Компонент Телефона
+            const Phone = ({ id, x, y, isCurrent, onClick }) => (
+                <div
+                    className={`phone-item rounded-2xl shadow-lg transition-all duration-300 ease-out cursor-pointer flex flex-col items-center justify-center p-2 ${
+                        isCurrent ? 'is-current' : 'border-2 border-gray-400 bg-gray-100'
+                    }`}
+                    style={{
+                        left: `${x}%`,
+                        top: `${y}%`,
+                    }}
+                    onClick={() => onClick(id)}
+                >
+                    <div className="text-xl font-bold mb-2">📱</div>
+                    <div className="text-sm text-gray-700">Телефон {id.substring(0, 4)}</div>
+                    {isCurrent && <Emoji isCurrent={isCurrent} />}
+                    <div className="absolute bottom-2 text-xs text-gray-500">
+                        {isCurrent ? 'Вы здесь!' : 'Нажмите, чтобы прыгнуть'}
+                    </div>
+                </div>
+            );
+
+            return (
+                <>
+                    {/* Game Header */}
+                    <div className="bg-white p-6 rounded-xl shadow-xl mb-6 text-center w-full max-w-md">
+                        <h1 className="text-4xl font-bold text-gray-800 mb-2">Emoji Jump!</h1>
+                        <p className="text-lg text-gray-600">Прыгайте между телефонами, избегайте быть пойманным!</p>
+                        <div className="mt-4 text-2xl font-semibold text-blue-600">Счет: {score}</div>
+                        {gameState === GAME_STATE.PLAYING && (
+                            <div className="text-xl text-red-500 mt-2">Время до следующего прыжка/конца игры: {timeToNextPhone}с</div>
+                        )}
+                        <p className="text-md text-gray-700 mt-2">{message}</p>
+                    </div>
+
+                    {/* Game Area */}
+                    <div className="phone-container">
+                        {phones.map(phone => (
+                            <Phone
+                                key={phone.id}
+                                id={phone.id}
+                                x={phone.x}
+                                y={phone.y}
+                                isCurrent={phone.id === currentPhoneId}
+                                onClick={handleJump}
+                            />
+                        ))}
+                    </div>
+
+                    {/* Game Controls / Status */}
+                    <div className="mt-8">
+                        {gameState === GAME_STATE.START && (
+                            <button
+                                onClick={startGame}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 transform hover:scale-105"
+                            >
+                                Начать игру
+                            </button>
+                        )}
+                        {gameState === GAME_STATE.GAME_OVER && (
+                            <button
+                                onClick={startGame}
+                                className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 transform hover:scale-105"
+                            >
+                                Играть снова
+                            </button>
+                        )}
+                        {gameState === GAME_STATE.PLAYING && jumpCooldown > 0 && (
+                            <div className="text-lg text-gray-700 mt-4">Кулдаун прыжка: {jumpCooldown.toFixed(1)}с</div>
+                        )}
+                    </div>
+                </>
+            );
+        };
+
+        // Mount the React app
+        const domNode = document.getElementById('game-root');
+        const root = createRoot(domNode);
+        root.render(<App />);
+    </script>
+</body>
+</html>
